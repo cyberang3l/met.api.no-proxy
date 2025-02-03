@@ -4,12 +4,14 @@ import datetime
 import json
 import os
 import sys
+import threading
 import time
 import traceback
 from copy import deepcopy
 from enum import StrEnum
 from http import client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Event, Lock
 from typing import Dict, Tuple
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlparse
@@ -19,6 +21,22 @@ hostName = os.environ.get("BIND_ADDR", "0.0.0.0")
 serverPort = int(os.environ.get("BIND_PORT", 8080))
 userAgentDefault = os.environ.get("PROXY_USER_AGENT", "https://github.com/cyberang3l/met.api.no-proxy")
 allowOverrideUserAgent = bool(int(os.environ.get("ALLOW_OVERRIDE_USER_AGENT", 0)))
+maxItemsInCache = int(os.environ.get("MAX_ITEMS_IN_CACHE", 10000))
+
+cacheLock = Lock()
+cache = {}
+
+signalCleanupThreadExit = Event()
+
+
+def cleanupCacheThread():
+    while not signalCleanupThreadExit.is_set():
+        with cacheLock:
+            for key in list(cache.keys()):
+                expireTime = cache[key][0]
+                if expireTime < time.time():
+                    del cache[key]
+        signalCleanupThreadExit.wait(60)
 
 
 class bcolors(StrEnum):
@@ -99,6 +117,19 @@ class HttpRequestHandler(BaseHTTPRequestHandler):
 
         try:
             data = resp.read()
+            # Convert GMT time from string "Mon, 03 Feb 2025 21:42:10 GMT" to unix timestamp
+            # And store it in the cache - we use the expire timestamp to invalidate the cache
+            # when needed
+            timestr = resp.headers.get("Expires")
+            if timestr is not None:
+                timestr = timestr.replace("GMT", "+0000")
+                unixTimestamp = datetime.datetime.strptime(timestr, "%a, %d %b %Y %H:%M:%S %z").timestamp()
+                printColor(f"Caching response - cache will be valid for {int(unixTimestamp - time.time())} seconds", color=bcolors.YELLOW)
+                with cacheLock:
+                    if len(cache) > maxItemsInCache:
+                        cache.popitem()
+                    cache[(lat, lon, apitype)] = (unixTimestamp, data)
+
             # Try to decode the response as JSON
             j = json.loads(data)
             if apitype == MetAPIType.LOCATIONFORECAST:
@@ -121,9 +152,15 @@ class HttpRequestHandler(BaseHTTPRequestHandler):
 
         try:
             lat, lon, apitype = self.parseIncomingRequest()
-            data = HttpRequestHandler.requestFromMetAPI(lat, lon, apitype, userAgent)
+            with cacheLock:
+                dataExpires, data = cache.get((lat, lon, apitype), (None, None))
+            if data is None or dataExpires < time.time():
+                data = HttpRequestHandler.requestFromMetAPI(lat, lon, apitype, userAgent)
+            else:
+                printColor(f"Serving cached data for {self.path} - cache expires in {int(dataExpires - time.time())} seconds", color=bcolors.YELLOW)
+
             self.send_response(200)
-            self.send_header("Content-type", f"application/json")
+            self.send_header("Content-type", "application/json")
             self.end_headers()
             printColor(
                 f" - Serving data for {self.path}", color=bcolors.BOLD + bcolors.GREEN)
@@ -141,6 +178,11 @@ class HttpRequestHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    # Start the cleanup thread
+    cleanupThread = threading.Thread(target=cleanupCacheThread)
+    cleanupThread.start()
+
+    # Start the server
     webServer = ThreadingHTTPServer(
         (hostName, serverPort), HttpRequestHandler)
     printColor(f"api.met.no proxy started http://{hostName}:{serverPort}", color=bcolors.WHITE)
@@ -153,6 +195,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         pass
 
+    signalCleanupThreadExit.set()
+
     webServer.server_close()
+    cleanupThread.join()
 
     printColor("Server stopped.", color=bcolors.WHITE)
