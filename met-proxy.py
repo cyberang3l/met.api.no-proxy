@@ -117,6 +117,12 @@ class HttpRequestHandler(BaseHTTPRequestHandler):
 
         try:
             data = resp.read()
+
+            # Try to decode the response as JSON
+            j = json.loads(data)
+            if apitype == MetAPIType.LOCATIONFORECAST:
+                data = HttpRequestHandler.reduceLocationForecastResponse(j)
+
             # Convert GMT time from string "Mon, 03 Feb 2025 21:42:10 GMT" to unix timestamp
             # And store it in the cache - we use the expire timestamp to invalidate the cache
             # when needed
@@ -130,10 +136,6 @@ class HttpRequestHandler(BaseHTTPRequestHandler):
                         cache.popitem()
                     cache[(lat, lon, apitype)] = (unixTimestamp, data)
 
-            # Try to decode the response as JSON
-            j = json.loads(data)
-            if apitype == MetAPIType.LOCATIONFORECAST:
-                data = HttpRequestHandler.reduceLocationForecastResponse(j)
             # If decoding is successful, return the content
             return data
         except json.JSONDecodeError as e:
