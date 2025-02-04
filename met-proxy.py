@@ -22,9 +22,15 @@ serverPort = int(os.environ.get("BIND_PORT", 8080))
 userAgentDefault = os.environ.get("PROXY_USER_AGENT", "https://github.com/cyberang3l/met.api.no-proxy")
 allowOverrideUserAgent = bool(int(os.environ.get("ALLOW_OVERRIDE_USER_AGENT", 0)))
 maxItemsInCache = int(os.environ.get("MAX_ITEMS_IN_CACHE", 10000))
+maxItemsIn422Cache = int(os.environ.get("MAX_ITEMS_IN_CACHE_422", 100000))
 
 cacheLock = Lock()
 cache = {}
+
+# Nowcast returns 422 if the location is outside the Nordics (Norway, Sweden, Denmark, Finland)
+# Cache those responses in a different cache table indefinitely as long as the cache size is below the limit.
+cache422Lock = Lock()
+cache422 = {}
 
 signalCleanupThreadExit = Event()
 
@@ -113,6 +119,11 @@ class HttpRequestHandler(BaseHTTPRequestHandler):
         req.add_header('User-Agent', userAgent)
         resp = urlopen(req, timeout=1)
         if resp.getcode() != 200:
+            if resp.getcode() == 422:
+                with cache422Lock:
+                    if len(cache422) > maxItemsIn422Cache:
+                        cache422.popitem()
+                    cache422[(lat, lon, apitype)] = True
             raise HTTPError(url, resp.getcode(), resp.msg, resp.headers, resp)
 
         try:
@@ -154,6 +165,10 @@ class HttpRequestHandler(BaseHTTPRequestHandler):
 
         try:
             lat, lon, apitype = self.parseIncomingRequest()
+            with cache422Lock:
+                if (lat, lon, apitype) in cache422:
+                    printColor(f"Serving cached 422 response for {self.path}", color=bcolors.BROWN)
+                    HTTPError(self.path, 422, "Area without coverage", client.HTTPMessage(), None)
             with cacheLock:
                 dataExpires, data = cache.get((lat, lon, apitype), (None, None))
             if data is None or dataExpires < time.time():
