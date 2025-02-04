@@ -117,13 +117,20 @@ class HttpRequestHandler(BaseHTTPRequestHandler):
             url = f"https://api.met.no/weatherapi/nowcast/2.0/complete.json?lat={lat:.4f}&lon={lon:.4f}"
         req = Request(url)
         req.add_header('User-Agent', userAgent)
-        resp = urlopen(req, timeout=1)
-        if resp.getcode() != 200:
-            if resp.getcode() == 422:
+        try:
+            resp = urlopen(req, timeout=1)
+        except HTTPError as e:
+            if e.code == 422:
                 with cache422Lock:
-                    if len(cache422) > maxItemsIn422Cache:
+                    if len(cache422) >= maxItemsIn422Cache:
                         cache422.popitem()
                     cache422[(lat, lon, apitype)] = True
+            raise
+
+        # Seems like urlopen throws an HTTPError if the response code is not 200,
+        # And this will be caught by the try-except block above, but add this check
+        # just to be on the safe side
+        if resp.getcode() != 200:
             raise HTTPError(url, resp.getcode(), resp.msg, resp.headers, resp)
 
         try:
@@ -143,7 +150,7 @@ class HttpRequestHandler(BaseHTTPRequestHandler):
                 unixTimestamp = datetime.datetime.strptime(timestr, "%a, %d %b %Y %H:%M:%S %z").timestamp()
                 printColor(f"Caching response - cache will be valid for {int(unixTimestamp - time.time())} seconds", color=bcolors.YELLOW)
                 with cacheLock:
-                    if len(cache) > maxItemsInCache:
+                    if len(cache) >= maxItemsInCache:
                         cache.popitem()
                     cache[(lat, lon, apitype)] = (unixTimestamp, data)
 
