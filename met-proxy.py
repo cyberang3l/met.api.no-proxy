@@ -200,12 +200,16 @@ def prepareResponse(lat: float, lon: float, nowcastResp: Dict, locationForecastR
             resp["location_name"] = locationIqResp["address"]["pitch"]
         elif "road" in locationIqResp["address"]:
             resp["location_name"] = locationIqResp["address"]["road"]
+        elif "neighbourhood" in locationIqResp["address"]:
+            resp["location_name"] = locationIqResp["address"]["neighbourhood"]
+        elif "suburb" in locationIqResp["address"]:
+            resp["location_name"] = locationIqResp["address"]["suburb"]
         elif "municipality" in locationIqResp["address"]:
             resp["location_name"] = locationIqResp["address"]["municipality"]
         elif "display_name" in locationIqResp:
             resp["location_name"] = locationIqResp["display_name"]
         else:
-            if not "error" in locationIqResp:
+            if "error" not in locationIqResp:
                 printColor(f"LocationIQ response to debug: {locationIqResp}", color=bcolors.RED)
 
     return resp
