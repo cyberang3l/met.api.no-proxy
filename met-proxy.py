@@ -15,6 +15,7 @@ from threading import Event, Lock
 from typing import (
     Dict,
     List,
+    Optional,
     Tuple,
     TypedDict
 )
@@ -76,6 +77,7 @@ def printColor(*args, color: str = bcolors.ENDC):
 class MetAPIType(StrEnum):
     NOWCAST = "nowcast"
     LOCATIONFORECAST = "locationforecast"
+    METALERTS = "metalerts"
 
 
 Timestamp = int
@@ -94,12 +96,15 @@ class CuratedResponse(TypedDict, total=False):
     precipitation_amount: float
     precipitation_rate: List[Tuple[Timestamp, PrecipitationRate]]
     location_name: str
+    warning_icon: Optional[str]
 
 
 def requestFromMetAPI(lat: float, lon: float, apitype: MetAPIType, userAgent: str) -> Tuple[int, Dict]:    # Default to locationforecast
     url = f"https://api.met.no/weatherapi/locationforecast/2.0/compact.json?lat={lat:.4f}&lon={lon:.4f}"
     if apitype == MetAPIType.NOWCAST:
         url = f"https://api.met.no/weatherapi/nowcast/2.0/complete.json?lat={lat:.4f}&lon={lon:.4f}"
+    elif apitype == MetAPIType.METALERTS:
+        url = f"https://api.met.no/weatherapi/metalerts/2.0/current.json?lat={lat:.4f}&lon={lon:.4f}"
     req = Request(url)
     req.add_header('User-Agent', userAgent)
     resp = urlopen(req, timeout=1)
@@ -137,7 +142,7 @@ def requestFromLocationIQ(lat: float, lon: float, apiKey: str) -> Dict:
     return json.loads(resp.read())
 
 
-def prepareResponse(lat: float, lon: float, nowcastResp: Dict, locationForecastResp: Dict, locationIqResp: Dict) -> CuratedResponse:
+def prepareResponse(lat: float, lon: float, nowcastResp: Dict, locationForecastResp: Dict, locationIqResp: Dict, warningIcon: Optional[str]) -> CuratedResponse:
     """
     Function that will take the response from the Met API and LocationIQ and prepare it
     for the Garmin watch.
@@ -212,7 +217,21 @@ def prepareResponse(lat: float, lon: float, nowcastResp: Dict, locationForecastR
             if "error" not in locationIqResp:
                 printColor(f"LocationIQ response to debug: {locationIqResp}", color=bcolors.RED)
 
+    resp["warning_icon"] = warningIcon
+
     return resp
+
+
+def getMetAlertWarningIcon(metAlertResp: Dict):
+    try:
+        first = metAlertResp["features"][0]["properties"]
+        warningType = first["event"]
+        # This seems to be on the format "2; yellow; Moderate"
+        warningColor = first["awareness_level"].split("; ")[1]
+        # Provide the same name as on https://github.com/nrkno/yr-warning-icons/
+        return f"icon-warning-{warningType}-{warningColor}"
+    except (KeyError, IndexError, TypeError):
+        return None
 
 
 def getHolisticResponse(lat: float, lon: float, userAgent: str, locationIqApiKey: str) -> bytes:
@@ -247,6 +266,13 @@ def getHolisticResponse(lat: float, lon: float, userAgent: str, locationIqApiKey
         # we don't have any weather data at all and we want to return an error
         expireTimestamp, locationForecast = requestFromMetAPI(lat, lon, MetAPIType.LOCATIONFORECAST, userAgent)
 
+    warningIcon = None
+    try:
+        _, metAlertResp = requestFromMetAPI(lat, lon, MetAPIType.METALERTS, userAgent)
+        warningIcon = getMetAlertWarningIcon(metAlertResp)
+    except BaseException:
+        printColor(traceback.format_exc(), color=bcolors.BROWN)
+
     locationIQ = {}
     try:
         # If this fails it is not critical, so we can ignore it - we'll return
@@ -255,7 +281,7 @@ def getHolisticResponse(lat: float, lon: float, userAgent: str, locationIqApiKey
     except BaseException:
         printColor(traceback.format_exc(), color=bcolors.BROWN)
 
-    resp = prepareResponse(lat, lon, nowcast, locationForecast, locationIQ)
+    resp = prepareResponse(lat, lon, nowcast, locationForecast, locationIQ, warningIcon)
 
     respBytes = json.dumps(resp).encode()
 
