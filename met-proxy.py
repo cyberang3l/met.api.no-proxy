@@ -142,6 +142,14 @@ def requestFromLocationIQ(lat: float, lon: float, apiKey: str) -> Dict:
     return json.loads(resp.read())
 
 
+def requestFromNveAvalance(lat: float, lon: float) -> Dict:
+    date = datetime.date.today()
+    url = f"https://api01.nve.no/hydrology/forecast/avalanche/v6.3.0/api/AvalancheWarningByCoordinates/Simple/{lat}/{lon}/no/{date}/{date}"
+    req = Request(url)
+    resp = urlopen(req, timeout=1)
+    return json.loads(resp.read())
+
+
 def prepareResponse(lat: float, lon: float, nowcastResp: Dict, locationForecastResp: Dict, locationIqResp: Dict, warningIcon: Optional[str]) -> CuratedResponse:
     """
     Function that will take the response from the Met API and LocationIQ and prepare it
@@ -234,6 +242,23 @@ def getMetAlertWarningIcon(metAlertResp: Dict):
         return None
 
 
+def getNveAvalancheWarningIcon(nveAvalancheResp: Dict):
+    try:
+        first = nveAvalancheResp[0]
+        dangerLevel = first["DangerLevel"]
+        levelToColor = {
+            '2': 'yellow',
+            '3': 'orange',
+            '4': 'red',
+            '5': 'red',
+        }
+        warningColor = levelToColor[dangerLevel]
+        # Provide the same name as on https://github.com/nrkno/yr-warning-icons/
+        return f"icon-warning-avalanches-{warningColor}"
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
 def getHolisticResponse(lat: float, lon: float, userAgent: str, locationIqApiKey: str) -> bytes:
     """
     Function that will try to fetch all the information, compact it, and return in
@@ -266,12 +291,20 @@ def getHolisticResponse(lat: float, lon: float, userAgent: str, locationIqApiKey
         # we don't have any weather data at all and we want to return an error
         expireTimestamp, locationForecast = requestFromMetAPI(lat, lon, MetAPIType.LOCATIONFORECAST, userAgent)
 
+    # Check for avalanche warnings first, then metalert warnings
     warningIcon = None
     try:
-        _, metAlertResp = requestFromMetAPI(lat, lon, MetAPIType.METALERTS, userAgent)
-        warningIcon = getMetAlertWarningIcon(metAlertResp)
+        nveAvalancheResp = requestFromNveAvalance(lat, lon)
+        warningIcon = getNveAvalancheWarningIcon(nveAvalancheResp)
     except BaseException:
         printColor(traceback.format_exc(), color=bcolors.BROWN)
+
+    if warningIcon is None:
+        try:
+            _, metAlertResp = requestFromMetAPI(lat, lon, MetAPIType.METALERTS, userAgent)
+            warningIcon = getMetAlertWarningIcon(metAlertResp)
+        except BaseException:
+            printColor(traceback.format_exc(), color=bcolors.BROWN)
 
     locationIQ = {}
     try:
