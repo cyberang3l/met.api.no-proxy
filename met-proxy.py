@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import asyncio
 import datetime
 import json
 import os
@@ -21,7 +22,8 @@ from typing import (
 )
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlparse
-from urllib.request import Request, urlopen
+
+import httpx
 
 hostName = os.environ.get("BIND_ADDR", "0.0.0.0")
 serverPort = int(os.environ.get("BIND_PORT", 8080))
@@ -30,6 +32,8 @@ allowOverrideUserAgent = bool(int(os.environ.get("ALLOW_OVERRIDE_USER_AGENT", 0)
 maxItemsInCache = int(os.environ.get("MAX_ITEMS_IN_CACHE", 10000))
 maxItemsIn422Cache = int(os.environ.get("MAX_ITEMS_IN_CACHE_422", 100000))
 debug = os.environ.get("DEBUG", "0").lower() == "1"
+asyncClient = httpx.AsyncClient()
+eventLoop = asyncio.new_event_loop()
 
 cacheLock = Lock()
 cache = {}
@@ -99,15 +103,14 @@ class CuratedResponse(TypedDict, total=False):
     warning_icon: Optional[str]
 
 
-def requestFromMetAPI(lat: float, lon: float, apitype: MetAPIType, userAgent: str) -> Tuple[int, Dict]:    # Default to locationforecast
+async def requestFromMetAPI(lat: float, lon: float, apitype: MetAPIType, userAgent: str) -> Tuple[int, Dict]:    # Default to locationforecast
     url = f"https://api.met.no/weatherapi/locationforecast/2.0/compact.json?lat={lat:.4f}&lon={lon:.4f}"
     if apitype == MetAPIType.NOWCAST:
         url = f"https://api.met.no/weatherapi/nowcast/2.0/complete.json?lat={lat:.4f}&lon={lon:.4f}"
     elif apitype == MetAPIType.METALERTS:
         url = f"https://api.met.no/weatherapi/metalerts/2.0/current.json?lat={lat:.4f}&lon={lon:.4f}"
-    req = Request(url)
-    req.add_header('User-Agent', userAgent)
-    resp = urlopen(req, timeout=1)
+
+    resp = await asyncClient.get(url, headers={'User-Agent': userAgent})
 
     try:
         data = resp.read()
@@ -133,20 +136,18 @@ def requestFromMetAPI(lat: float, lon: float, apitype: MetAPIType, userAgent: st
     raise HTTPError(url, 500, "Invalid JSON response", client.HTTPMessage(), None)
 
 
-def requestFromLocationIQ(lat: float, lon: float, apiKey: str) -> Dict:
+async def requestFromLocationIQ(lat: float, lon: float, apiKey: str) -> Dict:
     if not apiKey:
         return {}
     url = f"https://eu1.locationiq.com/v1/reverse.php?key={apiKey}&lat={lat}&lon={lon}&format=json"
-    req = Request(url)
-    resp = urlopen(req, timeout=1)
+    resp = await asyncClient.get(url)
     return json.loads(resp.read())
 
 
-def requestFromNveAvalanche(lat: float, lon: float) -> Dict:
+async def requestFromNveAvalanche(lat: float, lon: float) -> Dict:
     date = datetime.date.today()
     url = f"https://api01.nve.no/hydrology/forecast/avalanche/v6.3.0/api/AvalancheWarningByCoordinates/Simple/{lat}/{lon}/no/{date}/{date}"
-    req = Request(url)
-    resp = urlopen(req, timeout=1)
+    resp = await asyncClient.get(url)
     return json.loads(resp.read())
 
 
@@ -259,7 +260,7 @@ def getNveAvalancheWarningIcon(nveAvalancheResp: Dict):
         return None
 
 
-def getHolisticResponse(lat: float, lon: float, userAgent: str, locationIqApiKey: str) -> bytes:
+async def getHolisticResponse(lat: float, lon: float, userAgent: str, locationIqApiKey: str) -> bytes:
     """
     Function that will try to fetch all the information, compact it, and return in
     in a single request/response.
@@ -276,7 +277,7 @@ def getHolisticResponse(lat: float, lon: float, userAgent: str, locationIqApiKey
     with cache422Lock:
         if (lat, lon, MetAPIType.NOWCAST) not in cache422:
             try:
-                expireTimestamp, nowcast = requestFromMetAPI(lat, lon, MetAPIType.NOWCAST, userAgent)
+                expireTimestamp, nowcast = await requestFromMetAPI(lat, lon, MetAPIType.NOWCAST, userAgent)
             except HTTPError as e:
                 if e.code == 422:
                     if len(cache422) >= maxItemsIn422Cache:
@@ -284,25 +285,29 @@ def getHolisticResponse(lat: float, lon: float, userAgent: str, locationIqApiKey
                     cache422[(lat, lon, MetAPIType.NOWCAST)] = True
                 # Do not raise the exception here, as we want to try the locationforecast api
 
+    # Start async requests in parallel
+    nveAvalancheResp = requestFromNveAvalanche(lat, lon)
+    metAlertResp = requestFromMetAPI(lat, lon, MetAPIType.METALERTS, userAgent)
+    locationIQResp = requestFromLocationIQ(lat, lon, locationIqApiKey)
+
     locationForecast = {}
     if not nowcast:
         # If the nowcast query fails, try the locationforecast api
         # Do not encapsulate this in a try-except block, as if this fails too,
         # we don't have any weather data at all and we want to return an error
-        expireTimestamp, locationForecast = requestFromMetAPI(lat, lon, MetAPIType.LOCATIONFORECAST, userAgent)
+        expireTimestamp, locationForecast = await requestFromMetAPI(lat, lon, MetAPIType.LOCATIONFORECAST, userAgent)
 
     # Check for avalanche warnings first, then metalert warnings
     warningIcon = None
     try:
-        nveAvalancheResp = requestFromNveAvalanche(lat, lon)
-        warningIcon = getNveAvalancheWarningIcon(nveAvalancheResp)
+        warningIcon = getNveAvalancheWarningIcon(await nveAvalancheResp)
     except BaseException:
         printColor(traceback.format_exc(), color=bcolors.BROWN)
 
     if warningIcon is None:
         try:
-            _, metAlertResp = requestFromMetAPI(lat, lon, MetAPIType.METALERTS, userAgent)
-            warningIcon = getMetAlertWarningIcon(metAlertResp)
+            _, data = await metAlertResp
+            warningIcon = getMetAlertWarningIcon(data)
         except BaseException:
             printColor(traceback.format_exc(), color=bcolors.BROWN)
 
@@ -310,7 +315,7 @@ def getHolisticResponse(lat: float, lon: float, userAgent: str, locationIqApiKey
     try:
         # If this fails it is not critical, so we can ignore it - we'll return
         # the lat, lon as the location name
-        locationIQ = requestFromLocationIQ(lat, lon, locationIqApiKey)
+        locationIQ = await locationIQResp
     except BaseException:
         printColor(traceback.format_exc(), color=bcolors.BROWN)
 
@@ -367,7 +372,7 @@ class HttpRequestHandler(BaseHTTPRequestHandler):
             with cacheLock:
                 dataExpires, data = cache.get((lat, lon), (None, None))
             if data is None or dataExpires < time.time():
-                data = getHolisticResponse(lat, lon, userAgent, locationIqApiKey)
+                data = eventLoop.run_until_complete(getHolisticResponse(lat, lon, userAgent, locationIqApiKey))
             else:
                 printColor(f"Serving cached data for {self.path} - cache expires in {int(dataExpires - time.time())} seconds", color=bcolors.YELLOW)
 
