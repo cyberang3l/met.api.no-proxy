@@ -142,7 +142,7 @@ def requestFromLocationIQ(lat: float, lon: float, apiKey: str) -> Dict:
     return json.loads(resp.read())
 
 
-def requestFromNveAvalance(lat: float, lon: float) -> Dict:
+def requestFromNveAvalanche(lat: float, lon: float) -> Dict:
     date = datetime.date.today()
     url = f"https://api01.nve.no/hydrology/forecast/avalanche/v6.3.0/api/AvalancheWarningByCoordinates/Simple/{lat}/{lon}/no/{date}/{date}"
     req = Request(url)
@@ -294,7 +294,7 @@ def getHolisticResponse(lat: float, lon: float, userAgent: str, locationIqApiKey
     # Check for avalanche warnings first, then metalert warnings
     warningIcon = None
     try:
-        nveAvalancheResp = requestFromNveAvalance(lat, lon)
+        nveAvalancheResp = requestFromNveAvalanche(lat, lon)
         warningIcon = getNveAvalancheWarningIcon(nveAvalancheResp)
     except BaseException:
         printColor(traceback.format_exc(), color=bcolors.BROWN)
