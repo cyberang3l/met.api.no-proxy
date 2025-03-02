@@ -237,7 +237,7 @@ def getMetAlertWarningIcon(metAlertResp: Dict):
         # This seems to be on the format "2; yellow; Moderate"
         warningColor = first["awareness_level"].split("; ")[1]
         # Provide the same name as on https://github.com/nrkno/yr-warning-icons/
-        return f"icon-warning-{warningType}-{warningColor}"
+        return f"icon-warning-{warningType}-{warningColor}".lower()
     except (KeyError, IndexError, TypeError):
         return None
 
