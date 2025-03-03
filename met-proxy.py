@@ -233,11 +233,18 @@ def prepareResponse(lat: float, lon: float, nowcastResp: Dict, locationForecastR
 
 def getMetAlertWarningIcon(metAlertResp: Dict):
     try:
+        # These are the exceptions from just `type.lower()` in the table at
+        # https://github.com/nrkno/yr-warning-icons/tree/master?tab=readme-ov-file#mapping
+        warningTypeMappings = {
+            "blowingsnow": "snow",
+            "gale": "wind",
+            "icing": "generic",
+        }
         first = metAlertResp["features"][0]["properties"]
-        warningType = first["event"]
+        warningType = first["event"].lower()
+        warningType = warningTypeMappings.get(warningType, warningType)
         # This seems to be on the format "2; yellow; Moderate"
         warningColor = first["awareness_level"].split("; ")[1]
-        # Provide the same name as on https://github.com/nrkno/yr-warning-icons/
         return f"icon-warning-{warningType}-{warningColor}".lower()
     except (KeyError, IndexError, TypeError):
         return None
