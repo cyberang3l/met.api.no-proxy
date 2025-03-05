@@ -207,7 +207,7 @@ def prepareResponse(lat: float, lon: float, nowcastResp: Dict, locationForecastR
         raise ValueError("No weather data available")
 
     resp["location_name"] = f"Lat, Lon: {lat}, {lon}"
-    if locationIqResp:
+    if locationIqResp and "address" in locationIqResp:
         if "locality" in locationIqResp["address"]:
             resp["location_name"] = locationIqResp["address"]["locality"]
         elif "pitch" in locationIqResp["address"]:
