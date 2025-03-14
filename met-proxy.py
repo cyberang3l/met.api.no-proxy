@@ -204,6 +204,8 @@ def prepareResponse(lat: float, lon: float, nowcastResp: Dict, locationForecastR
         raise ValueError("No weather data available")
 
     resp["location_name"] = f"Lat, Lon: {lat}, {lon}"
+    if debug:
+        pprint(locationIqResp, compact=True)
     if locationIqResp and "address" in locationIqResp:
         if "locality" in locationIqResp["address"]:
             resp["location_name"] = locationIqResp["address"]["locality"]
@@ -217,6 +219,10 @@ def prepareResponse(lat: float, lon: float, nowcastResp: Dict, locationForecastR
             resp["location_name"] = locationIqResp["address"]["suburb"]
         elif "municipality" in locationIqResp["address"]:
             resp["location_name"] = locationIqResp["address"]["municipality"]
+        elif "village" in locationIqResp["address"]:
+            resp["location_name"] = locationIqResp["address"]["village"]
+        elif "city" in locationIqResp["address"]:
+            resp["location_name"] = locationIqResp["address"]["city"]
         elif "display_name" in locationIqResp:
             resp["location_name"] = locationIqResp["display_name"]
         else:
