@@ -108,7 +108,7 @@ async def requestFromMetAPI(lat: float, lon: float, apitype: MetAPIType, userAge
     elif apitype == MetAPIType.METALERTS:
         url = f"https://api.met.no/weatherapi/metalerts/2.0/current.json?lat={lat:.4f}&lon={lon:.4f}"
 
-    async with session.get(url, headers={'User-Agent': userAgent}) as resp:
+    async with session.get(url, headers={'User-Agent': userAgent}, raise_for_status=True) as resp:
         data = await resp.read()
 
     try:
@@ -283,7 +283,8 @@ async def getHolisticResponse(lat: float, lon: float, userAgent: str, locationIq
             try:
                 expireTimestamp, nowcast = await requestFromMetAPI(lat, lon, MetAPIType.NOWCAST, userAgent, session)
             except aiohttp.ClientResponseError as e:
-                if e.code == 422:
+                if e.status == 422:
+                    printColor(f"Received 422 nowcast response for {lat}, {lon} - adding location to cache422", color=bcolors.RED)
                     if len(cache422) >= maxItemsIn422Cache:
                         cache422.popitem()
                     cache422[(lat, lon, MetAPIType.NOWCAST)] = True
@@ -338,13 +339,11 @@ async def getHolisticResponse(lat: float, lon: float, userAgent: str, locationIq
 def parseRequest(qs):
     if 'lat' not in qs or 'lon' not in qs:
         printColor(qs, color=bcolors.RED)
-        raise web.HTTPBadRequest(reason=
-            "Error: expecting GET request with lat and lon parameters")
+        raise web.HTTPBadRequest(reason="Error: expecting GET request with lat and lon parameters")
 
     lat, lon = float(qs['lat']), float(qs['lon'])
     if lat < -90 or lat > 90 or lon < -180 or lon > 180:
-        raise web.HTTPBadRequest(reason=
-            "Error: lat and lon must be between -90 and 90 and -180 and 180 respectively")
+        raise web.HTTPBadRequest(reason="Error: lat and lon must be between -90 and 90 and -180 and 180 respectively")
 
     locationIqKey = qs.get("locationIqApiKey", "")
 
