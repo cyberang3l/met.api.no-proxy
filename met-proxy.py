@@ -67,12 +67,12 @@ class bcolors(StrEnum):
     UNDERLINE = '\033[4m'
 
 
-def pstderr(*args):
-    print(*args, file=sys.stderr)
+def pstderr(*args, color: str = bcolors.ENDC):
+    print(f"[{datetime.datetime.now().strftime("%F %H:%M:%S")}] -{color}", *args, bcolors.ENDC, file=sys.stderr)
 
 
 def printColor(*args, color: str = bcolors.ENDC):
-    pstderr(color, *args, bcolors.ENDC)
+    pstderr(*args, color=color)
 
 
 class MetAPIType(StrEnum):
@@ -356,6 +356,22 @@ def parseRequest(qs):
     return lat, lon, locationIqKey
 
 
+async def handleCacheInfoRequest(request: web.Request) -> web.Response:
+    try:
+        if request.path == "/cache":
+            with cacheLock:
+                return web.Response(text=json.dumps({str(k): str(v[0]) for k, v in cache.items()}, indent=2), content_type="application/json")
+        with cache422Lock:
+            return web.Response(text=json.dumps([str(k) for k in cache422.keys()], indent=2), content_type="application/json")
+
+    except web.HTTPError as e:
+        printColor(f"HTTP Error requesting {e}", color=bcolors.RED)
+        return e
+    except BaseException:
+        printColor(traceback.format_exc(), color=bcolors.RED)
+        return web.HTTPRequestTimeout(reason="Error: Request Timeout")
+
+
 async def handleRequest(request: web.Request) -> web.Response:
     userAgent = userAgentDefault
     if allowOverrideUserAgent:
@@ -384,7 +400,7 @@ async def handleRequest(request: web.Request) -> web.Response:
 
         return web.Response(text=data.decode('utf-8'), content_type="application/json")
     except web.HTTPError as e:
-        print(f"HTTP Error requesting {e}")
+        printColor(f"HTTP Error requesting {e}", color=bcolors.RED)
         return e
     except BaseException:
         printColor(traceback.format_exc(), color=bcolors.RED)
@@ -413,6 +429,8 @@ if __name__ == "__main__":
     # Start the server
     app = web.Application()
     app.router.add_get("/", handleRequest)
+    app.router.add_get("/cache", handleCacheInfoRequest)
+    app.router.add_get("/cache422", handleCacheInfoRequest)
     app.on_startup.append(onStartup)
     app.on_cleanup.append(onCleanup)
     web.run_app(app, host=hostName, port=serverPort)
