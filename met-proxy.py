@@ -68,7 +68,7 @@ class bcolors(StrEnum):
 
 
 def pstderr(*args, color: str = bcolors.ENDC):
-    print(f"[{datetime.datetime.now().strftime("%F %H:%M:%S")}] -{color}", *args, bcolors.ENDC, file=sys.stderr)
+    print(f"[{datetime.datetime.now().strftime('%F %H:%M:%S')}] -{color}", *args, bcolors.ENDC, file=sys.stderr)
 
 
 def printColor(*args, color: str = bcolors.ENDC):
@@ -98,11 +98,12 @@ class CuratedResponse(TypedDict, total=False):
     precipitation_rate: List[Tuple[Timestamp, PrecipitationRate]]
     location_name: str
     warning_icon: Optional[str]
+    ultraviolet_index_clear_sky: Optional[float]
 
 
 async def requestFromMetAPI(lat: float, lon: float, apitype: MetAPIType, userAgent: str, session: aiohttp.ClientSession) -> Tuple[int, Dict]:
     # Default to locationforecast
-    url = f"https://api.met.no/weatherapi/locationforecast/2.0/compact.json?lat={lat:.4f}&lon={lon:.4f}"
+    url = f"https://api.met.no/weatherapi/locationforecast/2.0/complete.json?lat={lat:.4f}&lon={lon:.4f}"
     if apitype == MetAPIType.NOWCAST:
         url = f"https://api.met.no/weatherapi/nowcast/2.0/complete.json?lat={lat:.4f}&lon={lon:.4f}"
     elif apitype == MetAPIType.METALERTS:
@@ -159,11 +160,14 @@ def prepareResponse(lat: float, lon: float, nowcastResp: Dict, locationForecastR
         "latitude": lat,
         "radar_coverage": False,
         "precipitation_amount": 0.0,
-        "precipitation_rate": []
+        "precipitation_rate": [],
+        "ultraviolet_index_clear_sky": None,
     }
 
-    # Use either the nowcast or the locationforecast api
-    if (nowcastResp):
+    if not nowcastResp and not locationForecastResp:
+        raise ValueError("No weather data available")
+
+    if nowcastResp:
         resp["radar_coverage"] = True if nowcastResp["properties"]["meta"]["radar_coverage"] == "ok" else False
 
         instantDetails = nowcastResp["properties"]["timeseries"][0]["data"]["instant"]["details"]
@@ -183,25 +187,23 @@ def prepareResponse(lat: float, lon: float, nowcastResp: Dict, locationForecastR
                 precipitation_rate: float = timeseries["data"]["instant"]["details"]["precipitation_rate"]
                 resp["precipitation_rate"].append((unixTimestamp, precipitation_rate))
 
-    elif locationForecastResp:
+    if locationForecastResp:
         for timeseries in locationForecastResp["properties"]["timeseries"]:
             now = time.time()
             unixTimestamp = int(datetime.datetime.strptime(timeseries["time"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp())
             if now >= unixTimestamp and now < unixTimestamp + 3600:
                 instantDetails = timeseries["data"]["instant"]["details"]
-                resp["air_temperature"] = instantDetails["air_temperature"]
-                resp["relative_humidity"] = instantDetails["relative_humidity"]
-                resp["wind_from_direction"] = instantDetails["wind_from_direction"]
-                resp["wind_speed"] = instantDetails["wind_speed"]
-
-                next_1_hours = timeseries["data"]["next_1_hours"]
-                resp["symbol_code"] = next_1_hours["summary"]["symbol_code"]
+                resp["ultraviolet_index_clear_sky"] = instantDetails["ultraviolet_index_clear_sky"]
+                if not nowcastResp:
+                    resp["air_temperature"] = instantDetails["air_temperature"]
+                    resp["relative_humidity"] = instantDetails["relative_humidity"]
+                    resp["wind_from_direction"] = instantDetails["wind_from_direction"]
+                    resp["wind_speed"] = instantDetails["wind_speed"]
+                    next_1_hours = timeseries["data"]["next_1_hours"]
+                    resp["symbol_code"] = next_1_hours["summary"]["symbol_code"]
                 break
             else:
                 continue
-
-    else:
-        raise ValueError("No weather data available")
 
     resp["location_name"] = f"Lat, Lon: {lat}, {lon}"
     if debug:
@@ -300,13 +302,16 @@ async def getHolisticResponse(lat: float, lon: float, userAgent: str, locationIq
     nveAvalancheResp = asyncio.create_task(requestFromNveAvalanche(lat, lon, session))
     metAlertResp = asyncio.create_task(requestFromMetAPI(lat, lon, MetAPIType.METALERTS, userAgent, session))
     locationIQResp = asyncio.create_task(requestFromLocationIQ(lat, lon, locationIqApiKey, session))
+    locationForecastResp = asyncio.create_task(requestFromMetAPI(lat, lon, MetAPIType.LOCATIONFORECAST, userAgent, session))
 
     locationForecast = {}
-    if not nowcast:
-        # If the nowcast query fails, try the locationforecast api
-        # Do not encapsulate this in a try-except block, as if this fails too,
-        # we don't have any weather data at all and we want to return an error
-        expireTimestamp, locationForecast = await requestFromMetAPI(lat, lon, MetAPIType.LOCATIONFORECAST, userAgent, session)
+    try:
+        expireTimestamp, locationForecast = await locationForecastResp
+    except BaseException:
+        if not nowcast:
+            # We don't have any weather data at all, so re-raise
+            raise
+        printColor(traceback.format_exc(), color=bcolors.BROWN)
 
     # Check for avalanche warnings first, then metalert warnings
     warningIcon = None
