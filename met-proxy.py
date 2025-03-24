@@ -5,13 +5,11 @@ import datetime
 import json
 import os
 import sys
-import threading
 import time
 import traceback
 from enum import StrEnum
 from http import client
 from pprint import pprint
-from threading import Event, Lock
 from typing import (
     Dict,
     List,
@@ -34,25 +32,22 @@ maxItemsIn422Cache = int(os.environ.get("MAX_ITEMS_IN_CACHE_422", 100000))
 debug = os.environ.get("DEBUG", "0").lower() == "1"
 cacheWebKey = os.environ.get("CACHE_WEB_KEY", "")
 
-cacheLock = Lock()
+cacheLock = asyncio.Lock()
 cache = {}
 
 # Nowcast returns 422 if the location is outside the Nordics (Norway, Sweden, Denmark, Finland)
 # Cache those responses in a different cache table indefinitely as long as the cache size is below the limit.
-cache422Lock = Lock()
+cache422Lock = asyncio.Lock()
 cache422 = {}
 
-signalCleanupThreadExit = Event()
-
-
-def cleanupCacheThread():
-    while not signalCleanupThreadExit.is_set():
-        with cacheLock:
+async def cleanupCacheTask():
+    while True:
+        async with cacheLock:
             for key in list(cache.keys()):
                 expireTime = cache[key][0]
                 if expireTime < time.time():
                     del cache[key]
-        signalCleanupThreadExit.wait(60)
+        await asyncio.sleep(60)
 
 
 class bcolors(StrEnum):
@@ -288,7 +283,7 @@ async def getHolisticResponse(lat: float, lon: float, userAgent: str, locationIq
 
     expireTimestamp = 0
     nowcast = {}
-    with cache422Lock:
+    async with cache422Lock:
         if (lat, lon, MetAPIType.NOWCAST) not in cache422:
             try:
                 expireTimestamp, nowcast = await requestFromMetAPI(lat, lon, MetAPIType.NOWCAST, userAgent, session)
@@ -342,7 +337,7 @@ async def getHolisticResponse(lat: float, lon: float, userAgent: str, locationIq
     respBytes = json.dumps(resp).encode()
 
     printColor(f"Caching response - cache will be valid for {int(expireTimestamp - time.time())} seconds", color=bcolors.YELLOW)
-    with cacheLock:
+    async with cacheLock:
         if len(cache) >= maxItemsInCache:
             cache.popitem()
         cache[(lat, lon)] = (expireTimestamp, respBytes)
@@ -370,9 +365,9 @@ async def handleCacheInfoRequest(request: web.Request) -> web.Response:
 
     try:
         if request.path == "/cache":
-            with cacheLock:
+            async with cacheLock:
                 return web.Response(text=json.dumps({str(k): str(v[0]) for k, v in cache.items()}, indent=2), content_type="application/json")
-        with cache422Lock:
+        async with cache422Lock:
             return web.Response(text=json.dumps([str(k) for k in cache422.keys()], indent=2), content_type="application/json")
 
     except web.HTTPError as e:
@@ -395,7 +390,7 @@ async def handleRequest(request: web.Request) -> web.Response:
     try:
         lat, lon, locationIqApiKey = parseRequest(request.query)
 
-        with cacheLock:
+        async with cacheLock:
             dataExpires, data = cache.get((lat, lon), (None, None))
 
         if data is None or dataExpires < time.time():
@@ -420,18 +415,22 @@ async def handleRequest(request: web.Request) -> web.Response:
 
 async def onStartup(app):
     app['client_session'] = aiohttp.ClientSession()
+    app['cleanup_task'] = asyncio.create_task(cleanupCacheTask())
 
 
 async def onCleanup(app):
     await app['client_session'].close()
 
+    app['cleanup_task'].cancel()
+    try:
+        await app['cleanup_task']
+    except asyncio.CancelledError:
+        pass
+
 
 if __name__ == "__main__":
     if debug:
         printColor("Debug enabled", color=bcolors.YELLOW)
-    # Start the cleanup thread
-    cleanupThread = threading.Thread(target=cleanupCacheThread)
-    cleanupThread.start()
 
     printColor(f"api.met.no proxy started http://{hostName}:{serverPort}", color=bcolors.WHITE)
     printColor(f"Default user-agent: '{userAgentDefault}'", color=bcolors.YELLOW)
@@ -445,8 +444,5 @@ if __name__ == "__main__":
     app.on_startup.append(onStartup)
     app.on_cleanup.append(onCleanup)
     web.run_app(app, host=hostName, port=serverPort)
-
-    signalCleanupThreadExit.set()
-    cleanupThread.join()
 
     printColor("Server stopped.", color=bcolors.WHITE)
