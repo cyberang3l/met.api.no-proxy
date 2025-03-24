@@ -3,7 +3,7 @@ set -eu
 
 detach=""
 if [ "${1:-}" == "detach" ]; then
-  detach="--detach"
+	detach="--detach"
 fi
 
 HOST_BIND_PORT=8080
@@ -14,15 +14,17 @@ CONTAINER_BIND_PORT=8080
 # - https://api.met.no/doc/FAQ
 PROXY_USER_AGENT=${PROXY_USER_AGENT:-https://github.com/cyberang3l/met.api.no-proxy}
 DEBUG=${DEBUG:-0}
+CACHE_WEB_KEY=${CACHE_WEB_KEY:-}
 
 docker stop met-proxy 2>/dev/null >/dev/null || true
 docker build --target prog_runtime \
-  --tag met-proxy .
+	--tag met-proxy .
 docker run --name met-proxy \
-  ${detach} \
-  --rm \
-  --publish "${HOST_BIND_PORT}:${CONTAINER_BIND_PORT}/tcp" \
-  --env BIND_PORT="${CONTAINER_BIND_PORT}" \
-  --env PROXY_USER_AGENT="${PROXY_USER_AGENT}" \
-  --env DEBUG="${DEBUG}" \
-  met-proxy
+	${detach} \
+	--rm \
+	--publish "${HOST_BIND_PORT}:${CONTAINER_BIND_PORT}/tcp" \
+	--env BIND_PORT="${CONTAINER_BIND_PORT}" \
+	--env PROXY_USER_AGENT="${PROXY_USER_AGENT}" \
+	--env CACHE_WEB_KEY="${CACHE_WEB_KEY}" \
+	--env DEBUG="${DEBUG}" \
+	met-proxy

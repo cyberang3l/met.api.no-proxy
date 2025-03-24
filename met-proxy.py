@@ -23,6 +23,7 @@ from urllib.error import HTTPError
 
 import aiohttp
 from aiohttp import web
+from multidict import MultiMapping
 
 hostName = os.environ.get("BIND_ADDR", "0.0.0.0")
 serverPort = int(os.environ.get("BIND_PORT", 8080))
@@ -31,6 +32,7 @@ allowOverrideUserAgent = bool(int(os.environ.get("ALLOW_OVERRIDE_USER_AGENT", 0)
 maxItemsInCache = int(os.environ.get("MAX_ITEMS_IN_CACHE", 10000))
 maxItemsIn422Cache = int(os.environ.get("MAX_ITEMS_IN_CACHE_422", 100000))
 debug = os.environ.get("DEBUG", "0").lower() == "1"
+cacheWebKey = os.environ.get("CACHE_WEB_KEY", "")
 
 cacheLock = Lock()
 cache = {}
@@ -347,7 +349,7 @@ async def getHolisticResponse(lat: float, lon: float, userAgent: str, locationIq
     return respBytes
 
 
-def parseRequest(qs):
+def parseRequest(qs: MultiMapping[str]) -> Tuple[float, float, str]:
     if 'lat' not in qs or 'lon' not in qs:
         printColor(qs, color=bcolors.RED)
         raise web.HTTPBadRequest(reason="Error: expecting GET request with lat and lon parameters")
@@ -362,6 +364,10 @@ def parseRequest(qs):
 
 
 async def handleCacheInfoRequest(request: web.Request) -> web.Response:
+    reqCacheWebKey = request.query.get("cacheWebKey", "")
+    if cacheWebKey == "" or reqCacheWebKey != cacheWebKey:
+        raise web.HTTPBadRequest()
+
     try:
         if request.path == "/cache":
             with cacheLock:
